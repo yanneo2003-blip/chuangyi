@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <!-- 关键：移动端视口设置，禁止缩放 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>MindFlow - 创意发散</title>
+    
+    <!-- 引入 D3.js (使用更稳定的 CDN) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <!-- 引入 Marked (用于解析 Markdown) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-main: #000000;
+            --accent-color: #FFD700; /* 亮黄色 */
+            --glass-bg: rgba(255, 255, 255, 0.85);
+            --glass-border: rgba(0, 0, 0, 0.08);
+            --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+        }
+
+        /* 全局重置，防止移动端橡皮筋效果 */
+        html, body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            overflow: hidden; /* 禁止滚动 */
+            width: 100vw;
+            height: 100vh; /* 兼容 */
+            height: 100dvh; /* 移动端动态高度 */
+            color: var(--text-main);
+            touch-action: none; /* 禁止默认触摸行为 */
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* 加载中提示 (防止白屏) */
+        #loading-screen {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #fff;
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 14px;
+            color: #666;
+            transition: opacity 0.5s;
+        }
+
+        /* 画布区域 */
+        #viz-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0; left: 0;
+            z-index: 1;
+        }
+
+        /* 玻璃质感通用类 */
+        .glass {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            box-shadow: var(--shadow);
+        }
+
+        /* 输入框容器 */
+        #input-wrapper {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 400px;
+            z-index: 10;
+            transition: all 0.6s cubic-bezier(0.25, 1, 0.5, 1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* 激活后移动到底部，适配 iPhone 安全区域 */
+        #input-wrapper.active {
+            top: auto;
+            bottom: 30px;
+            bottom: calc(30px + env(safe-area-inset-bottom)); /* 适配 iPhone X+ */
+            transform: translate(-50%, 0);
+        }
+
+        #main-input {
+            width: 100%;
+            height: 50px;
+            border-radius: 50px;
+            border: 1px solid rgba(0,0,0,0.1);
+            padding: 0 20px;
+            font-size: 16px; /* 防止 iOS 输入框放大 */
+            outline: none;
+            transition: all 0.3s;
+            text-align: center;
+            background: rgba(255,255,255,0.9);
+            box-sizing: border-box;
+            appearance: none; /* 移除iOS默认样式 */
+        }
+
+        #main-input:focus {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.2);
+        }
+
+        /* 右上角功能区 */
+        .top-right-controls {
+            position: absolute;
+            top: 20px;
+            top: calc(20px + env(safe-area-inset-top));
+            right: 20px;
+            z-index: 20;
+            display: flex;
+            gap: 10px;
+        }
+
+        .icon-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        /* 侧边栏：移动端设为全屏或宽幅 */
+        .sidebar {
+            position: absolute;
+            right: -100%;
+            top: 0;
+            width: 100%;
+            max-width: 320px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(20px);
+            z-index: 30;
+            transition: right 0.3s ease;
+            box-shadow: -5px 0 30px rgba(0,0,0,0.05);
+            padding: 20px;
+            padding-top: calc(20px + env(safe-area-inset-top));
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar.open { right: 0; }
+
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; font-size: 12px; margin-bottom: 5px; color: #666; }
+        .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; -webkit-appearance: none;}
+
+        .btn {
+            background: var(--text-main);
+            color: #fff;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--text-main);
+            color: var(--text-main);
+        }
+
+        /* 历史记录列表 */
+        #history-list { flex: 1; overflow-y: auto; margin-top: 20px; -webkit-overflow-scrolling: touch; }
+        .history-item { padding: 12px; border-bottom: 1px solid #eee; }
+
+        /* 创意生成结果弹窗 */
+        #idea-modal {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            width: 85%;
+            max-height: 80%;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s;
+            padding: 25px;
+            overflow-y: auto;
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        #idea-modal.open {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        #idea-content { line-height: 1.6; font-size: 14px; }
+        #close-modal { position: absolute; top: 15px; right: 15px; font-size: 24px; padding: 10px; cursor: pointer;}
+
+        /* 底部操作栏 */
+        #bottom-actions {
+            position: absolute;
+            bottom: 90px; /* 在输入框上面 */
+            bottom: calc(90px + env(safe-area-inset-bottom));
+            right: 20px;
+            z-index: 9;
+        }
+        
+        #bottom-actions button {
+            padding: 8px 16px;
+            font-size: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        /* D3 节点样式 */
+        .node circle {
+            stroke: #ddd;
+            stroke-width: 1.5px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .node.selected circle, .node.root circle {
+            fill: var(--accent-color) !important;
+            stroke: #000 !important;
+            r: 50 !important;
+        }
+        
+        .node.loading circle {
+            stroke: var(--accent-color);
+            stroke-width: 3px;
+            animation: breathe 1.5s infinite;
+        }
+
+        @keyframes breathe {
+            0% { stroke-opacity: 1; stroke-width: 2px; }
+            50% { stroke-opacity: 0.4; stroke-width: 8px; }
+            100% { stroke-opacity: 1; stroke-width: 2px; }
+        }
+
+        /* 文本容器 */
+        .foreign-obj { pointer-events: none; }
+        .word-container {
+            width: 100%; height: 100%;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            text-align: center;
+            line-height: 1.2;
+            padding: 2px;
+            box-sizing: border-box;
+        }
+        .main-word { font-weight: bold; font-size: 14px; color: #000; overflow-wrap: break-word; max-width: 90%;}
+        .sub-word { font-size: 10px; color: #444; margin-top: 2px; overflow-wrap: break-word; max-width: 95%;}
+
+    </style>
+</head>
+<body>
+
+    <!-- 加载遮罩 -->
+    <div id="loading-screen">资源加载中...</div>
+
+    <!-- 画布 -->
+    <div id="viz-container"></div>
+
+    <!-- 右上角按钮 -->
+    <div class="top-right-controls">
+        <div class="icon-btn glass" onclick="toggleSettings()" title="设置API">⚙️</div>
+        <div class="icon-btn glass" onclick="toggleHistory()" title="历史记录">📜</div>
+    </div>
+
+    <!-- 输入框 -->
+    <div id="input-wrapper" class="glass">
+        <input type="text" id="main-input" placeholder="输入灵感词，回车发散..." autocomplete="off">
+    </div>
+
+    <!-- 底部功能按钮 -->
+    <div id="bottom-actions">
+        <button class="btn glass" onclick="generateIdeaScheme()">✨ 生成创意</button>
+    </div>
+
+    <!-- 侧边栏：设置 -->
+    <div id="settings-sidebar" class="sidebar">
+        <h3>API 设置</h3>
+        <div class="form-group">
+            <label>API Key</label>
+            <input type="password" id="api-key" placeholder="Enter Gemini API Key">
+        </div>
+        <div class="form-group">
+            <label>模型名称</label>
+            <input type="text" id="model-name" value="gemini-1.5-flash">
+        </div>
+        <div class="form-group">
+            <label>API Endpoint (可选)</label>
+            <input type="text" id="api-url" placeholder="官方默认地址">
+        </div>
+        <button class="btn" onclick="validateApi()">验证有效性</button>
+        <p id="api-status" style="font-size:12px; margin-top:5px; height: 20px;"></p>
+        <button class="btn btn-outline" style="margin-top:auto;" onclick="toggleSettings()">关闭</button>
+    </div>
+
+    <!-- 侧边栏：历史记录 -->
+    <div id="history-sidebar" class="sidebar">
+        <h3>历史记录</h3>
+        <div id="history-list"></div>
+        <button class="btn btn-outline" style="margin-top:auto;" onclick="toggleHistory()">关闭</button>
+    </div>
+
+    <!-- 创意方案弹窗 -->
+    <div id="idea-modal" class="glass">
+        <div id="close-modal" onclick="closeIdeaModal()">×</div>
+        <h2 style="margin-top:0; font-size: 18px;">💡 创意方案</h2>
+        <div id="idea-content"></div>
+    </div>
+
+    <script>
+        // 0. 全局状态 (必须最先定义)
+        const state = {
+            nodes: [],
+            links: [],
+            selectedNodes: new Set(),
+            history: [],
+            isFirstInput: true,
+            apiConfig: {
+                key: localStorage.getItem('gemini_key') || '',
+                model: localStorage.getItem('gemini_model') || 'gemini-1.5-flash',
+                url: localStorage.getItem('gemini_url') || 'https://generativelanguage.googleapis.com/v1beta/models/'
+            }
+        };
+
+        // 移除加载遮罩
+        window.onload = () => {
+            const loader = document.getElementById('loading-screen');
+            loader.style.opacity = '0';
+            setTimeout(() => loader.remove(), 500);
+            initApp();
+        };
+
+        function initApp() {
+            // UI 初始化
+            const keyInput = document.getElementById('api-key');
+            const modelInput = document.getElementById('model-name');
+            const urlInput = document.getElementById('api-url');
+            
+            if(keyInput) keyInput.value = state.apiConfig.key;
+            if(modelInput) modelInput.value = state.apiConfig.model;
+            if(urlInput && state.apiConfig.url) urlInput.value = state.apiConfig.url;
+            
+            document.getElementById('main-input').focus();
+            
+            // 初始化 D3
+            initD3();
+        }
+
+        // D3 变量
+        let svg, simulation, g, link, node;
+        let width, height;
+
+        function initD3() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            
+            svg = d3.select("#viz-container").append("svg")
+                .attr("width", width)
+                .attr("height", height)
+                .on("click", (e) => {
+                    // 点击空白处取消选择
+                    if(e.target.tagName === 'svg') {
+                        state.selectedNodes.clear();
+                        updateNodeStyles();
+                        document.getElementById('main-input').blur(); // 移动端收起键盘
+                    }
+                });
+
+            // 力导向图配置
+            simulation = d3.forceSimulation(state.nodes)
+                .force("link", d3.forceLink(state.links).id(d => d.id).distance(100))
+                .force("charge", d3.forceManyBody().strength(-400))
+                .force("center", d3.forceCenter(width / 2, height / 2 - 50))
+                .force("collide", d3.forceCollide(55).iterations(2))
+                .alphaDecay(0.04)
+                .velocityDecay(0.6);
+
+            g = svg.append("g");
+            
+            // 缩放
+            const zoom = d3.zoom()
+                .scaleExtent([0.1, 3])
+                .on("zoom", (event) => g.attr("transform", event.transform));
+            svg.call(zoom);
+
+            // 初始化选择集
+            link = g.append("g").attr("class", "links").selectAll(".link");
+            node = g.append("g").attr("class", "nodes").selectAll(".node");
+
+            // 监听窗口大小变化 (旋转屏幕/软键盘弹出)
+            window.addEventListener('resize', () => {
+                width = window.innerWidth;
+                height = window.innerHeight;
+                svg.attr("width", width).attr("height", height);
+                simulation.force("center", d3.forceCenter(width / 2, height / 2 - 50));
+                simulation.alpha(0.3).restart();
+            });
+        }
+
+        function render() {
+            // 更新数据
+            link = link.data(state.links, d => d.source.id + "-" + d.target.id);
+            link.exit().remove();
+            const linkEnter = link.enter().append("line").attr("class", "link")
+                .style("stroke", "#999").style("stroke-opacity", 0.3).style("stroke-width", 1.5);
+            link = linkEnter.merge(link);
+
+            node = node.data(state.nodes, d => d.id);
+            node.exit().transition().duration(300).attr("transform", d => `translate(${d.x},${d.y}) scale(0)`).remove();
+
+            const nodeEnter = node.enter().append("g")
+                .attr("class", d => `node ${d.isRoot ? 'root' : ''}`)
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended))
+                .on("click", handleNodeClick) // 左键/单击
+                .on("contextmenu", handleNodeContext) // 右键
+                .on("touchstart", handleTouchStart) // 移动端长按模拟
+                .on("touchend", handleTouchEnd);
+
+            nodeEnter.append("circle")
+                .attr("r", 0)
+                .attr("fill", "#fff")
+                .transition().duration(500)
+                .attr("r", d => d.isRoot ? 50 : 35);
+
+            const fo = nodeEnter.append("foreignObject")
+                .attr("width", d => d.isRoot ? 100 : 70)
+                .attr("height", d => d.isRoot ? 100 : 70)
+                .attr("x", d => d.isRoot ? -50 : -35)
+                .attr("y", d => d.isRoot ? -50 : -35)
+                .attr("class", "foreign-obj");
+
+            fo.append("xhtml:div")
+                .attr("class", "word-container")
+                .html(d => `<div class="main-word">${d.word}</div><div class="sub-word">${d.trans}</div>`);
+
+            node = nodeEnter.merge(node);
+            updateNodeStyles();
+            
+            simulation.nodes(state.nodes).on("tick", ticked);
+            simulation.force("link").links(state.links);
+            simulation.alpha(0.5).restart();
+        }
+
+        function ticked() {
+            link.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+            node.attr("transform", d => `translate(${d.x},${d.y})`);
+        }
+
+        function updateNodeStyles() {
+            node.classed("selected", d => state.selectedNodes.has(d.id));
+            node.select("circle").transition().duration(300)
+                .attr("r", d => d.isRoot ? 50 : (state.selectedNodes.has(d.id) ? 45 : 35));
+        }
+
+        // 交互：长按逻辑 (移动端模拟右键)
+        let touchTimer = null;
+        let isLongPress = false;
+
+        function handleTouchStart(event, d) {
+            isLongPress = false;
+            touchTimer = setTimeout(() => {
+                isLongPress = true;
+                // 触发选中逻辑
+                toggleSelection(d);
+                // 震动反馈
+                if(navigator.vibrate) navigator.vibrate(50);
+            }, 600); // 长按600ms算选中
+        }
+
+        function handleTouchEnd() {
+            if (touchTimer) clearTimeout(touchTimer);
+        }
+
+        function handleNodeClick(event, d) {
+            if (isLongPress) return; // 如果是长按触发的，忽略点击
+            if (event.defaultPrevented) return; // 拖拽不触发
+            
+            // 点击扩散
+            const element = d3.select(this);
+            element.classed("loading", true);
+            
+            fetchGeminiAssociations(d.word)
+                .then(newWords => addChildrenNodes(d, newWords))
+                .catch(err => alert("API Error: " + err.message))
+                .finally(() => element.classed("loading", false));
+        }
+
+        function handleNodeContext(event, d) {
+            event.preventDefault();
+            toggleSelection(d);
+        }
+
+        function toggleSelection(d) {
+            if (state.selectedNodes.has(d.id)) state.selectedNodes.delete(d.id);
+            else state.selectedNodes.add(d.id);
+            updateNodeStyles();
+        }
+
+        // 拖拽
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x; d.fy = d.y;
+        }
+        function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null; d.fy = null;
+        }
+
+        // 输入处理
+        const inputEl = document.getElementById('main-input');
+        inputEl.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && inputEl.value.trim() !== "") {
+                processInput(inputEl.value.trim());
+                inputEl.value = "";
+                inputEl.blur(); // 移动端回车后收起键盘
+            }
+        });
+
+        async function processInput(text) {
+            if (state.isFirstInput) {
+                document.getElementById('input-wrapper').classList.add('active');
+                state.isFirstInput = false;
+                
+                const rootNode = { id: text, word: text, trans: "SEED", isRoot: true, x: width/2, y: height/2 };
+                state.nodes.push(rootNode);
+                render();
+                addToHistory(text);
+
+                // 首次自动联想
+                setTimeout(() => {
+                    const rootEl = node.filter(d => d.id === text).node();
+                    if(rootEl) d3.select(rootEl).classed("loading", true);
+                    
+                    fetchGeminiAssociations(text).then(words => {
+                        addChildrenNodes(rootNode, words);
+                        if(rootEl) d3.select(rootEl).classed("loading", false);
+                    });
+                }, 100);
+            } else {
+                // 连接到选中词
+                let parentNode = null;
+                if (state.selectedNodes.size > 0) {
+                    const lastId = Array.from(state.selectedNodes).pop();
+                    parentNode = state.nodes.find(n => n.id === lastId);
+                }
+
+                const newNodeId = text + "_" + Date.now();
+                const newNode = { 
+                    id: newNodeId, word: text, trans: "Input", 
+                    x: parentNode ? parentNode.x + (Math.random()-0.5)*50 : width/2, 
+                    y: parentNode ? parentNode.y + (Math.random()-0.5)*50 : height/2 
+                };
+                
+                state.nodes.push(newNode);
+                if (parentNode) state.links.push({ source: parentNode.id, target: newNodeId });
+                render();
+            }
+        }
+
+        function addChildrenNodes(parentNode, wordsData) {
+            if(!wordsData) return;
+            wordsData.forEach((item, i) => {
+                const nodeId = item.word;
+                if (state.nodes.find(n => n.id === nodeId)) return;
+                const newNode = {
+                    id: nodeId, word: item.word, trans: item.trans,
+                    x: parentNode.x + Math.cos(i) * 60, y: parentNode.y + Math.sin(i) * 60
+                };
+                state.nodes.push(newNode);
+                state.links.push({ source: parentNode.id, target: nodeId });
+            });
+            render();
+        }
+
+        // API 逻辑
+        async function fetchGeminiAssociations(word) {
+            const config = state.apiConfig;
+            if (!config.key) throw new Error("请先设置 API Key");
+
+            const prompt = `你是一个创意联想助手。请根据词语“${word}”，发散出7到8个相关的、有创意的关联词。请严格按照JSON数组格式返回: [{"word": "中文", "trans": "En"}].`;
+            const url = `${config.url}${config.model}:generateContent?key=${config.key}`;
+
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+            });
+
+            if(!res.ok) throw new Error("请求失败");
+            const data = await res.json();
+            let text = data.candidates[0].content.parts[0].text;
+            text = text.replace(/```json|```/g, '').trim();
+            return JSON.parse(text);
+        }
+
+        async function generateIdeaScheme() {
+            if (state.selectedNodes.size === 0) return alert("请先长按选中词语！");
+            
+            const words = Array.from(state.selectedNodes).map(id => {
+                const n = state.nodes.find(node => node.id === id);
+                return n ? n.word : id;
+            }).join("、");
+
+            const modal = document.getElementById('idea-modal');
+            const content = document.getElementById('idea-content');
+            modal.classList.add('open');
+            content.innerHTML = '<div style="text-align:center; padding:30px;">正在思考创意...🧠</div>';
+
+            try {
+                const config = state.apiConfig;
+                const prompt = `我选择了一些灵感词：${words}。请利用这些词，生成一个有创意的方案。使用Markdown格式。`;
+                const url = `${config.url}${config.model}:generateContent?key=${config.key}`;
+                
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                });
+
+                const data = await res.json();
+                const text = data.candidates[0].content.parts[0].text;
+                content.innerHTML = marked.parse(text);
+            } catch (e) {
+                content.innerHTML = `<p style="color:red">生成失败: ${e.message}</p>`;
+            }
+        }
+
+        // 设置与辅助功能
+        function toggleSettings() {
+            const el = document.getElementById('settings-sidebar');
+            el.classList.toggle('open');
+            if(!el.classList.contains('open')) saveSettings();
+        }
+
+        function saveSettings() {
+            state.apiConfig.key = document.getElementById('api-key').value.trim();
+            state.apiConfig.model = document.getElementById('model-name').value.trim();
+            state.apiConfig.url = document.getElementById('api-url').value.trim() || state.apiConfig.url;
+            localStorage.setItem('gemini_key', state.apiConfig.key);
+            localStorage.setItem('gemini_model', state.apiConfig.model);
+            localStorage.setItem('gemini_url', state.apiConfig.url);
+        }
+
+        async function validateApi() {
+            saveSettings();
+            const status = document.getElementById('api-status');
+            if(!state.apiConfig.key) {
+                status.textContent = "❌ 请输入 API Key";
+                return;
+            }
+            status.textContent = "⏳ 验证中...";
+            try {
+                await fetchGeminiAssociations("Test");
+                status.textContent = "✅ 验证成功";
+                status.style.color = "green";
+            } catch (e) {
+                status.textContent = "❌ 失败: " + e.message;
+                status.style.color = "red";
+            }
+        }
+
+        function toggleHistory() { document.getElementById('history-sidebar').classList.toggle('open'); }
+        function addToHistory(word) {
+            state.history.push(word);
+            const div = document.createElement('div');
+            div.className = 'history-item';
+            div.innerText = word;
+            div.onclick = () => confirm("重新开始？") && location.reload();
+            document.getElementById('history-list').prepend(div);
+        }
+        function closeIdeaModal() { document.getElementById('idea-modal').classList.remove('open'); }
+
+    </script>
+</body>
+</html>
